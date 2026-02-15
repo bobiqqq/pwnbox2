@@ -27,14 +27,26 @@ git clone https://github.com/bobiqqq/pwnbox2
 cd pwnbox2
 
 # 3) start the amd64 Colima VM (does not change your current docker context)
-colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu
+colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
 
 # 4) build the image INSIDE the colima-x64 docker context (run from repo root with Dockerfile)
-docker build -t pwnbox .
+docker --context colima-x64 buildx build --load -t pwnbox .
 # (outside colima-x64 context, add: --platform linux/amd64)
 
 # 5) install the launcher script OPTIONAL BUT RECOMMENDED FOR FAST EXEC
 sudo install -m 0755 ./pwnbox /usr/local/bin/pwnbox
+```
+
+if 
+
+```bash
+colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
+docker --context colima-x64 buildx build --load -t pwnbox .
+```
+doesn't work, try:
+```bash
+colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu
+docker buildx build -t pwnbox .
 ```
 
 ## Oh-My-Zsh install (optional)
@@ -95,4 +107,4 @@ export PWNBOX_PRIVILEGED=yes
 export PWNBOX_SECCOMP=unconfined
 ```
 
-Note: colima setup may be long, so if ssh takes a few minutes to setup, that's normal.
+Note: colima or docker setup may be long, so if ssh (colima) takes a few minutes to setup, that's normal. 
