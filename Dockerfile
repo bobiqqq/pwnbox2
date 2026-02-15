@@ -34,6 +34,7 @@ RUN set -eux; \
 RUN python3 -m pip install --no-cache-dir --upgrade pwntools --break-system-packages
 RUN python3 -m pip install --no-cache-dir --upgrade flare-floss --break-system-packages
 
+<<<<<<< HEAD
 RUN git clone --depth=1 https://github.com/hugsy/gef.git /opt/gef && \
     echo "source /opt/gef/gef.py" > /root/.gdbinit
 RUN git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh && \
@@ -42,3 +43,9 @@ RUN git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh 
 RUN echo "export LC_CTYPE=C.UTF-8" >> /root/.zshenv
 
 WORKDIR /box
+=======
+RUN zsh -c "$(wget https://gef.blah.cat/sh -O -)"
+RUN echo "export LC_CTYPE=C.UTF-8" >> ~/.zshenv
+
+WORKDIR /box
+>>>>>>> be982cc (123)
