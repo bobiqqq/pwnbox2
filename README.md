@@ -27,15 +27,23 @@ git clone https://github.com/bobiqqq/pwnbox2
 cd pwnbox2
 
 # 3) start the amd64 Colima VM (does not change your current docker context)
-colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
+colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu
 
 # 4) build the image INSIDE the colima-x64 docker context (run from repo root with Dockerfile)
-docker --context colima-x64 build -t pwnbox .
+docker build -t pwnbox .
 # (outside colima-x64 context, add: --platform linux/amd64)
 
 # 5) install the launcher script OPTIONAL BUT RECOMMENDED FOR FAST EXEC
 sudo install -m 0755 ./pwnbox /usr/local/bin/pwnbox
 ```
+
+## Oh-My-Zsh install (optional)
+
+Enter container with ```pwnbox``` and run:
+
+```zsh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"```
+
+omz will work properly, when you re-enter container.
 
 ## Commands (accessible with pwnbox -h)
 Just enter the container (no copying):
