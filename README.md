@@ -32,10 +32,10 @@ colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
 docker --context colima-x64 buildx build --load -t pwnbox .
 
 # 5) install the launcher script OPTIONAL BUT RECOMMENDED FOR FAST EXEC
-# sudo install -m 0755 ./pwnbox /usr/local/bin/pwnbox
+sudo install -m 0755 ./pwnbox /usr/local/bin/pwnbox
 ```
 
-## Commands
+## Commands (accessible with pwnbox -h)
 Just enter the container (no copying):
 ```bash
 pwnbox
@@ -73,10 +73,5 @@ Remove the container (all copied files are lost; next `pwnbox` will recreate it)
 pwnbox --rm
 ```
 
-## Environment variables (optional)
-- `PWNBOX_PROFILE` (default: `x64`)
-- `PWNBOX_DOCKER_CONTEXT` (default: `colima-x64`)
-- `PWNBOX_IMAGE` (default: `pwnbox`)
-- `PWNBOX_CONTAINER` (default: `pwnbox-main`)
-- `PWNBOX_DIR_FILE_LIMIT` (default: `5`)
-- `PWNBOX_STOP_COLIMA` (default: `ask`, values: `ask|yes|no`)
+
+Note: colima setup may be long, so if ssh takes a few minutes to setup, that's normal.
