@@ -29,6 +29,9 @@ cd pwnbox2
 # 3) start the amd64 Colima VM (does not change your current docker context)
 colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
 
+# 3.1) if the docker context wasn't created automatically, create it once:
+docker context inspect colima-x64 >/dev/null 2>&1 || docker context create colima-x64 --docker "host=unix://$HOME/.colima/x64/docker.sock"
+
 # 4) build the image INSIDE the colima-x64 docker context (run from repo root with Dockerfile)
 docker --context colima-x64 buildx build --load -t pwnbox .
 # (outside colima-x64 context, add: --platform linux/amd64)
@@ -53,7 +56,9 @@ docker buildx build -t pwnbox .
 
 Enter container with ```pwnbox``` and run:
 
-```zsh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"```
+```bash
+zsh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+```
 
 omz will work properly, when you re-enter container.
 
