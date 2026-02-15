@@ -1,9 +1,12 @@
-FROM --platform=amd64 ubuntu:latest
+FROM ubuntu:24.04
 
-RUN apt-get update
+ENV DEBIAN_FRONTEND=noninteractive
 
 # essential packages
-RUN apt-get install \
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
     file \
     wget \
     strace \
@@ -15,7 +18,7 @@ RUN apt-get install \
     gdb \
     socat \
     git \
-    netcat-traditional \
+    netcat-openbsd \
     net-tools \
     iputils-ping \
     libffi-dev \
@@ -23,16 +26,19 @@ RUN apt-get install \
     build-essential \
     zsh \
     patchelf \
-    xxd \
     vim \
-    nano \
-    -y --fix-missing&& \
-    rm -rf /var/lib/apt/list/*
+    vim-common \
+    nano; \
+    rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pwntools --break-system-packages
-RUN pip install --upgrade flare-floss --break-system-packages
+RUN python3 -m pip install --no-cache-dir --upgrade pwntools --break-system-packages
+# RUN python3 -m pip install --no-cache-dir --upgrade flare-floss --break-system-packages
 
-RUN zsh -c "$(wget https://gef.blah.cat/sh -O -)"
-RUN echo "export LC_CTYPE=C.UTF-8" >> ~/.zshenv
+RUN git clone --depth=1 https://github.com/hugsy/gef.git /opt/gef && \
+    echo "source /opt/gef/gef.py" > /root/.gdbinit
+RUN git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh && \
+    cp /root/.oh-my-zsh/templates/zshrc.zsh-template /root/.zshrc && \
+    echo 'DISABLE_AUTO_UPDATE="true"' >> /root/.zshrc
+RUN echo "export LC_CTYPE=C.UTF-8" >> /root/.zshenv
 
 WORKDIR /box
