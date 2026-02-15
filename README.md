@@ -4,6 +4,7 @@
 - The `pwnbox` script starts the Colima profile `x64` (amd64 via QEMU) if it isn’t running.
 - It starts Colima with `--activate=false` so it won’t switch your current Docker context.
 - All payloads always go into the **same container**: `pwnbox-main` (the container is not removed).
+- By default the container is **not privileged** (`SYS_PTRACE` only + Docker default seccomp).
 - For each run it creates a folder `/home/<name>_<hex>/` and puts:
   - file: `/home/<name>_<hex>/<original_filename>` + `chmod +x`
   - directory: the directory contents (no suffixes added to names) + recursive perms
@@ -29,7 +30,8 @@ cd pwnbox2
 colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
 
 # 4) build the image INSIDE the colima-x64 docker context (run from repo root with Dockerfile)
-docker --context colima-x64 buildx build --load -t pwnbox .
+docker --context colima-x64 build -t pwnbox .
+# (outside colima-x64 context, add: --platform linux/amd64)
 
 # 5) install the launcher script OPTIONAL BUT RECOMMENDED FOR FAST EXEC
 sudo install -m 0755 ./pwnbox /usr/local/bin/pwnbox
@@ -73,5 +75,16 @@ Remove the container (all copied files are lost; next `pwnbox` will recreate it)
 pwnbox --rm
 ```
 
+Optional security/compatibility env vars:
+```bash
+# default: no privileged mode
+export PWNBOX_PRIVILEGED=no
+
+# if you need old behavior:
+export PWNBOX_PRIVILEGED=yes
+
+# seccomp mode for non-privileged container (default: default)
+export PWNBOX_SECCOMP=unconfined
+```
 
 Note: colima setup may be long, so if ssh takes a few minutes to setup, that's normal.
