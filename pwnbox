@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: pwnbox [--force-dir] <file-or-dir>
+       pwnbox
+       pwnbox --clear
+       pwnbox --size
+       pwnbox --rm
+
+Options:
+  --force-dir          force copying a directory (bypass file-limit guard)
+
+Modes:
+  (no args)            open /bin/zsh in the container (no copying)
+  <file-or-dir>        copy to /home/<name>_<hex>/ and open /bin/zsh
+  --clear              delete /home/* (except /home/ubuntu)
+  --size               show docker + /home size info
+  --rm                 remove the pwnbox-main container (all files inside are lost)
+
+Environment variables (optional):
+  PWNBOX_PROFILE        (default: x64)
+  PWNBOX_DOCKER_CONTEXT (default: colima-x64)
+  PWNBOX_IMAGE          (default: pwnbox)
+  PWNBOX_CONTAINER       (default: pwnbox-main)
+  PWNBOX_DIR_FILE_LIMIT (default: 5)
+  PWNBOX_STOP_COLIMA    (ask|yes|no, default: ask)
+EOF
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing required command: $1" >&2
+    exit 127
+  fi
+}
+
+rand_hex8() {
+  if command -v xxd >/dev/null 2>&1; then
+    head -c 4 /dev/urandom | xxd -p | tr -d '\n'
+    return 0
+  fi
+  if command -v hexdump >/dev/null 2>&1; then
+    head -c 4 /dev/urandom | hexdump -v -e '/1 "%02x"'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 4
+    return 0
+  fi
+  echo "error: can't generate randomness (need xxd/hexdump/openssl)" >&2
+  exit 1
+}
+
+safe_name() {
+  local raw="$1"
+  local cleaned
+  cleaned="$(printf '%s' "$raw" | tr -cs 'A-Za-z0-9._-' '_' | sed -e 's/^_\\+//' -e 's/_\\+$//')"
+  if [ -z "$cleaned" ]; then
+    echo "payload"
+  else
+    echo "$cleaned"
+  fi
+}
+
+need_cmd colima
+need_cmd docker
+
+force_dir=false
+do_clear=false
+do_size=false
+do_rm=false
+while [ "${1:-}" = "--force-dir" ] || [ "${1:-}" = "--clear" ] || [ "${1:-}" = "--size" ] || [ "${1:-}" = "--rm" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; do
+  case "${1:-}" in
+    --force-dir) force_dir=true; shift ;;
+    --clear) do_clear=true; shift ;;
+    --size) do_size=true; shift ;;
+    --rm) do_rm=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+  esac
+done
+
+mode_count=0
+$do_clear && mode_count=$((mode_count + 1))
+$do_size && mode_count=$((mode_count + 1))
+$do_rm && mode_count=$((mode_count + 1))
+if [ "$mode_count" -gt 1 ]; then
+  echo "error: choose only one of: --clear, --size, --rm" >&2
+  exit 2
+fi
+
+shell_only=false
+if $do_clear || $do_size || $do_rm; then
+  if [ "$#" -ne 0 ]; then
+    echo "error: this mode takes no positional arguments" >&2
+    exit 2
+  fi
+else
+  if [ "$#" -eq 0 ]; then
+    shell_only=true
+  fi
+fi
+
+input="${1:-}"
+if $shell_only && $force_dir; then
+  echo "error: --force-dir requires <file-or-dir>" >&2
+  exit 2
+fi
+
+if ! $shell_only && ! $do_clear && ! $do_size && ! $do_rm; then
+  if [ ! -e "$input" ]; then
+    echo "error: not found: $input" >&2
+    exit 1
+  fi
+fi
+
+profile="${PWNBOX_PROFILE:-x64}"
+docker_ctx="${PWNBOX_DOCKER_CONTEXT:-colima-${profile}}"
+image="${PWNBOX_IMAGE:-pwnbox}"
+container="${PWNBOX_CONTAINER:-pwnbox-main}"
+
+colima_started_by_us=false
+
+on_exit() {
+  code=$?
+  set +e
+  if [ "$code" -ne 0 ] && $colima_started_by_us; then
+    if docker context inspect "$docker_ctx" >/dev/null 2>&1; then
+      docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+    fi
+    colima stop -p "$profile" >/dev/null 2>&1 || true
+  fi
+}
+trap on_exit EXIT
+
+prompt_stop_colima() {
+  if [ "${PWNBOX_STOP_COLIMA:-ask}" = "no" ]; then
+    return 1
+  fi
+  if [ "${PWNBOX_STOP_COLIMA:-ask}" = "yes" ]; then
+    return 0
+  fi
+  if [ -r /dev/tty ]; then
+    while true; do
+      printf "Stop Colima? [Y/n] " >/dev/tty
+      IFS= read -r ans </dev/tty || ans=""
+      case "${ans:-Y}" in
+        y|Y|yes|YES) return 0 ;;
+        n|N|no|NO) return 1 ;;
+        *) ;;
+      esac
+    done
+  fi
+  return 0
+}
+
+container_exists() {
+  docker --context "$docker_ctx" container inspect "$container" >/dev/null 2>&1
+}
+
+if ! colima status -p "$profile" >/dev/null 2>&1; then
+  colima start -p "$profile" -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
+  colima_started_by_us=true
+fi
+
+if ! docker context inspect "$docker_ctx" >/dev/null 2>&1; then
+  echo "error: docker context '$docker_ctx' not found." >&2
+  echo "hint: after 'colima start -p $profile', you should see a context named 'colima-$profile'." >&2
+  exit 1
+fi
+
+if $do_rm; then
+  if ! container_exists; then
+    echo "pwnbox: container '${container}' not found (nothing to remove)"
+  else
+    if [ -r /dev/tty ]; then
+      printf "Remove container '%s'? This will delete everything inside it. [y/N] " "$container" >/dev/tty
+      IFS= read -r ans </dev/tty || ans=""
+      case "${ans:-N}" in
+        y|Y|yes|YES) ;;
+        *) echo "pwnbox: aborted"; exit 0 ;;
+      esac
+    else
+      echo "error: no tty for confirmation; rerun interactively" >&2
+      exit 1
+    fi
+    docker --context "$docker_ctx" rm -f "$container" >/dev/null
+    echo "pwnbox: removed container '${container}'"
+  fi
+
+  if prompt_stop_colima; then
+    colima stop -p "$profile" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if $do_size; then
+  echo "== docker system df =="
+  docker --context "$docker_ctx" system df || true
+  echo
+  echo "== image =="
+  docker --context "$docker_ctx" images "$image" --format 'REPO={{.Repository}} TAG={{.Tag}} SIZE={{.Size}}' || true
+  echo
+  echo "== container =="
+  if container_exists; then
+    docker --context "$docker_ctx" container inspect --size "$container" --format 'SizeRw={{.SizeRw}} SizeRootFs={{.SizeRootFs}}' || true
+    echo
+    echo "== /home in container =="
+    container_was_running="$(docker --context "$docker_ctx" inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo false)"
+    if [ "$container_was_running" != "true" ]; then
+      docker --context "$docker_ctx" start "$container" >/dev/null 2>&1 || true
+    fi
+    docker --context "$docker_ctx" exec "$container" sh -lc 'du -sh /home/* 2>/dev/null | sort -h | tail -n 30' || true
+    if [ "$container_was_running" != "true" ]; then
+      docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "container '${container}' not found"
+  fi
+
+  if prompt_stop_colima; then
+    if container_exists; then
+      docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+    fi
+    colima stop -p "$profile" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if ! docker --context "$docker_ctx" image inspect "$image" >/dev/null 2>&1; then
+  echo "error: docker image '$image' not found in context '$docker_ctx'." >&2
+  echo "hint: from the repo with Dockerfile, run:" >&2
+  echo "  docker --context \"$docker_ctx\" buildx build --load -t \"$image\" ." >&2
+  exit 1
+fi
+
+if ! container_exists; then
+  docker --context "$docker_ctx" create \
+    --name "$container" \
+    --privileged \
+    --cap-add SYS_PTRACE \
+    --security-opt seccomp=unconfined \
+    -w /home \
+    "$image" \
+    sleep infinity \
+    >/dev/null
+fi
+
+running="$(docker --context "$docker_ctx" inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo false)"
+if [ "$running" != "true" ]; then
+  docker --context "$docker_ctx" start "$container" >/dev/null
+fi
+
+if $do_clear; then
+  docker --context "$docker_ctx" exec "$container" sh -lc '
+    set -e
+    for p in /home/*; do
+      [ "$p" = "/home/*" ] && break
+      b="$(basename "$p")"
+      [ "$b" = "ubuntu" ] && continue
+      rm -rf -- "$p"
+    done
+  '
+  echo "pwnbox: cleared container ${container} (/home/* except /home/ubuntu)"
+  if prompt_stop_colima; then
+    docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+    colima stop -p "$profile" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if $shell_only; then
+  docker --context "$docker_ctx" exec -it -w /home "$container" /bin/zsh
+  if prompt_stop_colima; then
+    docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+    colima stop -p "$profile" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if [ -d "$input" ]; then
+  input_abs="$(cd "$input" && pwd -P)"
+  base="$(basename "$input_abs")"
+  kind="dir"
+
+  dir_file_limit="${PWNBOX_DIR_FILE_LIMIT:-5}"
+  dir_file_count="$(find "$input_abs" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if ! $force_dir && [ "${dir_file_count:-0}" -gt "$dir_file_limit" ]; then
+    echo "error: directory has ${dir_file_count} files (> ${dir_file_limit}); refusing to copy whole directory: $input" >&2
+    echo "hint: specify a single file inside it, or rerun with --force-dir (override)." >&2
+    exit 1
+  fi
+else
+  dir="$(cd "$(dirname -- "$input")" && pwd -P)"
+  base="$(basename -- "$input")"
+  input_abs="$dir/$base"
+  kind="file"
+fi
+
+suffix="$(rand_hex8)"
+name="$(safe_name "$base")"
+dest_dir="/home/${name}_${suffix}"
+
+if [ "$kind" = "dir" ]; then
+  docker --context "$docker_ctx" exec "$container" sh -lc "mkdir -p \"\$1\"" sh "$dest_dir"
+  docker --context "$docker_ctx" cp "${input_abs}/." "${container}:${dest_dir}"
+  docker --context "$docker_ctx" exec "$container" sh -lc '
+    set -e
+    d="$1"
+    chmod -R u+rwX,go+rX "$d"
+    find "$d" -type f -exec chmod +x {} +
+  ' sh "$dest_dir"
+  workdir="$dest_dir"
+else
+  docker --context "$docker_ctx" exec "$container" sh -lc "mkdir -p \"\$1\"" sh "$dest_dir"
+  docker --context "$docker_ctx" cp "$input_abs" "${container}:${dest_dir}/"
+  dest_file="${dest_dir}/$(basename -- "$input_abs")"
+  docker --context "$docker_ctx" exec "$container" sh -lc 'chmod +x "$1"' sh "$dest_file"
+  workdir="$dest_dir"
+fi
+
+echo "pwnbox: copied to ${dest_dir}"
+docker --context "$docker_ctx" exec -it -w "$workdir" "$container" /bin/zsh
+
+if prompt_stop_colima; then
+  docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
+  colima stop -p "$profile" >/dev/null 2>&1 || true
+fi
