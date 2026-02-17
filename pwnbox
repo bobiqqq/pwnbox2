@@ -46,7 +46,7 @@ Environment variables (optional):
   PWNBOX_DOCKER_HOST    (default: unix://$HOME/.colima/<profile>/docker.sock)
   PWNBOX_IMAGE          (default: pwnbox)
   PWNBOX_CONTAINER      (default: pwnbox-main)
-  PWNBOX_DIR_FILE_LIMIT (default: 5)
+  PWNBOX_DIR_FILE_LIMIT (default: 5; max top-level entries for dir copy)
   PWNBOX_PRIVILEGED     (yes|no, default: no)
   PWNBOX_SECCOMP        (default|unconfined, default: default)
   PWNBOX_STOP_COLIMA    (ask|yes|no, default: ask)
@@ -222,18 +222,31 @@ prompt_stop_colima() {
   if [ "$stop_mode" = "yes" ]; then
     return 0
   fi
-  if [ -r /dev/tty ]; then
-    while true; do
-      printf "Stop Colima? [Y/n] " >/dev/tty
-      IFS= read -r ans </dev/tty || ans=""
-      case "${ans:-Y}" in
-        y|Y|yes|YES) return 0 ;;
-        n|N|no|NO) return 1 ;;
-        *) ;;
-      esac
-    done
+  if [ ! -r /dev/tty ]; then
+    if $colima_started_by_us; then
+      return 0
+    fi
+    return 1
   fi
-  return 0
+
+  local default_answer prompt
+  if $colima_started_by_us; then
+    default_answer="Y"
+    prompt="Stop Colima? [Y/n] "
+  else
+    default_answer="N"
+    prompt="Stop Colima? [y/N] "
+  fi
+
+  while true; do
+    printf "%s" "$prompt" >/dev/tty
+    IFS= read -r ans </dev/tty || ans=""
+    case "${ans:-$default_answer}" in
+      y|Y|yes|YES) return 0 ;;
+      n|N|no|NO) return 1 ;;
+      *) ;;
+    esac
+  done
 }
 
 container_exists() {
@@ -269,7 +282,7 @@ need_tty() {
 }
 
 if ! colima status -p "$profile" >/dev/null 2>&1; then
-  colima start -p "$profile" -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu
+  colima start -p "$profile" -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
   colima_started_by_us=true
 fi
 
@@ -403,9 +416,9 @@ if [ -d "$input" ]; then
   base="$(basename "$input_abs")"
   kind="dir"
 
-  dir_file_count="$(find "$input_abs" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
-  if ! $force_dir && [ "${dir_file_count:-0}" -gt "$dir_file_limit" ]; then
-    echo "error: directory has ${dir_file_count} files (> ${dir_file_limit}); refusing to copy whole directory: $input" >&2
+  dir_entry_count="$(find "$input_abs" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if ! $force_dir && [ "${dir_entry_count:-0}" -gt "$dir_file_limit" ]; then
+    echo "error: directory has ${dir_entry_count} top-level entries (> ${dir_file_limit}); refusing to copy whole directory: $input" >&2
     echo "hint: specify a single file inside it, or rerun with --force-dir (override)." >&2
     exit 1
   fi
@@ -427,7 +440,6 @@ if [ "$kind" = "dir" ]; then
     set -e
     d="$1"
     chmod -R u+rwX,go+rX "$d"
-    find "$d" -type f -exec chmod +x {} +
   ' sh "$dest_dir"
   workdir="$dest_dir"
 else
