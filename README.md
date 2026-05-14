@@ -17,20 +17,28 @@ Notes:
 # 1) install deps
 brew install docker docker-buildx colima
 
-# 2) clone repo
+# 2) ensure buildx plugin is visible
+docker buildx version
+# 2.1) if "docker: unknown command: docker buildx" create softlink to binary file
+mkdir -p ~/.docker/cli-plugins
+ln -sf "$(brew --prefix)/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
+
+
+# 3) clone repo
 git clone https://github.com/bobiqqq/pwnbox2
 cd pwnbox2
 
-# 3) start amd64 Colima profile (does not change active docker context)
+# 4) start amd64 Colima profile
 colima start -p x64 -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
 
-# 4) create docker context if needed
-docker context inspect colima-x64 >/dev/null 2>&1 || docker context create colima-x64 --docker "host=unix://$HOME/.colima/x64/docker.sock"
+# 5) create docker context if needed
+docker context inspect colima-x64 >/dev/null 2>&1 || \
+  docker context create colima-x64 --docker "host=unix://$HOME/.colima/x64/docker.sock"
 
-# 5) build image in colima-x64 context
+# 6) build image
 docker --context colima-x64 buildx build --load -t pwnbox .
 
-# 6) install launcher
+# 7) install launcher
 install -m 0755 ./pwnbox /usr/local/bin/pwnbox
 ```
 

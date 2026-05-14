@@ -30,6 +30,7 @@ Options:
 Notes:
   - Run this script WITHOUT sudo.
   - It will request sudo only for final launcher install if needed.
+  - On macOS/Homebrew, this script also fixes docker-buildx plugin visibility.
 EOF
 }
 
@@ -90,13 +91,15 @@ done
 if [ -z "$DOCKER_CONTEXT" ]; then
   DOCKER_CONTEXT="colima-${PROFILE}"
 fi
+
 if [ -z "$DOCKER_HOST" ]; then
   DOCKER_HOST="unix://${HOME}/.colima/${PROFILE}/docker.sock"
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "error: do not run setup as root/sudo." >&2
-  echo "hint: run './setup.sh' (script will use sudo only for final install if required)." >&2
+  echo "hint: run './setup.sh' instead." >&2
+  echo "hint: the script will use sudo only for final launcher install if required." >&2
   exit 1
 fi
 
@@ -104,7 +107,7 @@ REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$REPO_DIR"
 
 if [ ! -f "$REPO_DIR/Dockerfile" ] || [ ! -f "$REPO_DIR/pwnbox" ]; then
-  echo "error: expected Dockerfile and pwnbox in $REPO_DIR" >&2
+  echo "error: expected Dockerfile and pwnbox launcher in $REPO_DIR" >&2
   exit 1
 fi
 
@@ -179,9 +182,10 @@ print_progress() {
 
 show_log_tail() {
   local log_file="$1"
+
   if [ -s "$log_file" ]; then
     warn "Last command output:"
-    tail -n 80 "$log_file" >&2
+    tail -n 120 "$log_file" >&2
   fi
 }
 
@@ -199,10 +203,12 @@ run_step() {
   if $DRY_RUN; then
     printf "  %b[dry-run]%b %q" "$C_DIM" "$C_RESET" "$1"
     shift
+
     while [ "$#" -gt 0 ]; do
       printf " %q" "$1"
       shift
     done
+
     printf "\n"
     print_progress "$step_no" "$total"
     rm -f "$log_file"
@@ -214,12 +220,15 @@ run_step() {
     local pid=$!
     local spin='|/-\'
     local i=0
+
     while kill -0 "$pid" >/dev/null 2>&1; do
       printf "\r  %b%c%b working..." "$C_DIM" "${spin:$((i % 4)):1}" "$C_RESET"
       sleep 0.1
       i=$((i + 1))
     done
+
     printf "\r\033[K"
+
     if ! wait "$pid"; then
       fail "  failed: $title"
       show_log_tail "$log_file"
@@ -242,14 +251,23 @@ run_step() {
 
 preflight() {
   if [ "$(uname -s)" != "Darwin" ]; then
-    echo "error: this installer targets macOS (Apple Silicon)." >&2
+    echo "error: this installer targets macOS." >&2
     return 1
   fi
+
   if [ "$(uname -m)" != "arm64" ]; then
     warn "non-arm64 host detected, proceeding anyway"
   fi
+
   if ! command -v brew >/dev/null 2>&1; then
-    echo "error: Homebrew is required: https://brew.sh" >&2
+    echo "error: Homebrew is required." >&2
+    echo "hint: install it from https://brew.sh" >&2
+    return 1
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "error: git is required." >&2
+    echo "hint: install Command Line Tools or run: brew install git" >&2
     return 1
   fi
 }
@@ -257,6 +275,7 @@ preflight() {
 install_dependencies() {
   local missing=()
   local pkg
+
   for pkg in docker docker-buildx colima; do
     if ! brew list --formula "$pkg" >/dev/null 2>&1; then
       missing+=("$pkg")
@@ -271,12 +290,71 @@ install_dependencies() {
   brew install "${missing[@]}"
 }
 
+ensure_buildx_plugin() {
+  local plugin_dir="${HOME}/.docker/cli-plugins"
+  local plugin_path="${plugin_dir}/docker-buildx"
+  local brew_prefix=""
+  local buildx_bin=""
+  local candidate=""
+
+  if docker buildx version >/dev/null 2>&1; then
+    echo "docker buildx is already available"
+    docker buildx version
+    return 0
+  fi
+
+  brew_prefix="$(brew --prefix)"
+
+  for candidate in \
+    "${brew_prefix}/bin/docker-buildx" \
+    "${brew_prefix}/lib/docker/cli-plugins/docker-buildx" \
+    "/opt/homebrew/bin/docker-buildx" \
+    "/opt/homebrew/lib/docker/cli-plugins/docker-buildx" \
+    "/usr/local/bin/docker-buildx" \
+    "/usr/local/lib/docker/cli-plugins/docker-buildx"
+  do
+    if [ -x "$candidate" ]; then
+      buildx_bin="$candidate"
+      break
+    fi
+  done
+
+  if [ -z "$buildx_bin" ]; then
+    echo "error: docker-buildx binary was not found." >&2
+    echo "hint: try: brew reinstall docker-buildx" >&2
+    return 1
+  fi
+
+  mkdir -p "$plugin_dir"
+  ln -sf "$buildx_bin" "$plugin_path"
+
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo "error: docker buildx is still unavailable after plugin symlink." >&2
+    echo "hint: plugin path: $plugin_path" >&2
+    echo "hint: target path: $buildx_bin" >&2
+    echo "hint: try: chmod +x '$buildx_bin'" >&2
+    return 1
+  fi
+
+  echo "docker buildx plugin linked:"
+  echo "  $plugin_path -> $buildx_bin"
+  docker buildx version
+}
+
 start_colima() {
   if colima status -p "$PROFILE" >/dev/null 2>&1; then
     echo "colima profile '$PROFILE' is already running"
     return 0
   fi
-  colima start -p "$PROFILE" -a x86_64 -c 4 -m 2 -d 10 --vm-type qemu --activate=false
+
+  colima start \
+    -p "$PROFILE" \
+    -a x86_64 \
+    -c 4 \
+    -m 2 \
+    -d 10 \
+    --vm-type qemu \
+    --activate=false
 }
 
 ensure_docker_context() {
@@ -284,14 +362,28 @@ ensure_docker_context() {
     echo "docker context '$DOCKER_CONTEXT' already exists"
     return 0
   fi
+
   docker context create "$DOCKER_CONTEXT" --docker "host=${DOCKER_HOST}"
 }
 
-build_image() {
-  if docker --context "$DOCKER_CONTEXT" buildx build --load -t "$IMAGE" "$REPO_DIR"; then
-    return 0
+check_docker_context() {
+  if ! docker --context "$DOCKER_CONTEXT" info >/dev/null 2>&1; then
+    echo "error: docker context '$DOCKER_CONTEXT' is not reachable." >&2
+    echo "hint: expected Docker host: $DOCKER_HOST" >&2
+    echo "hint: try: colima status -p '$PROFILE'" >&2
+    echo "hint: try: colima start -p '$PROFILE' -a x86_64 --vm-type qemu --activate=false" >&2
+    return 1
   fi
-  docker --context "$DOCKER_CONTEXT" build -t "$IMAGE" "$REPO_DIR"
+
+  echo "docker context '$DOCKER_CONTEXT' is reachable"
+}
+
+build_image() {
+  docker --context "$DOCKER_CONTEXT" buildx build \
+    --progress=plain \
+    --load \
+    -t "$IMAGE" \
+    "$REPO_DIR"
 }
 
 install_launcher() {
@@ -310,28 +402,34 @@ install_launcher() {
   return 1
 }
 
-TOTAL_STEPS=6
+TOTAL_STEPS=8
 
 printf "%b" "$C_BOLD"
 print_logo
 printf "%b\n" "$C_RESET"
+
 info "pwnbox setup started"
 printf "  repo: %s\n" "$REPO_DIR"
 printf "  profile: %s\n" "$PROFILE"
 printf "  context: %s\n" "$DOCKER_CONTEXT"
+printf "  docker host: %s\n" "$DOCKER_HOST"
 printf "  image: %s\n" "$IMAGE"
 printf "  install path: %s\n" "$INSTALL_PATH"
+
 if $DRY_RUN; then
   warn "dry-run mode enabled: commands will not be executed"
 fi
+
 printf "\n"
 
 run_step 1 "$TOTAL_STEPS" "Preflight checks" preflight
-run_step 2 "$TOTAL_STEPS" "Install dependencies (brew)" install_dependencies
-run_step 3 "$TOTAL_STEPS" "Start Colima profile '$PROFILE'" start_colima
-run_step 4 "$TOTAL_STEPS" "Ensure Docker context '$DOCKER_CONTEXT'" ensure_docker_context
-run_step 5 "$TOTAL_STEPS" "Build Docker image '$IMAGE'" build_image
-run_step 6 "$TOTAL_STEPS" "Install launcher to '$INSTALL_PATH'" install_launcher
+run_step 2 "$TOTAL_STEPS" "Install dependencies with Homebrew" install_dependencies
+run_step 3 "$TOTAL_STEPS" "Ensure Docker buildx plugin" ensure_buildx_plugin
+run_step 4 "$TOTAL_STEPS" "Start Colima profile '$PROFILE'" start_colima
+run_step 5 "$TOTAL_STEPS" "Ensure Docker context '$DOCKER_CONTEXT'" ensure_docker_context
+run_step 6 "$TOTAL_STEPS" "Check Docker context '$DOCKER_CONTEXT'" check_docker_context
+run_step 7 "$TOTAL_STEPS" "Build Docker image '$IMAGE'" build_image
+run_step 8 "$TOTAL_STEPS" "Install launcher to '$INSTALL_PATH'" install_launcher
 
 printf "\n"
 ok "Setup completed successfully."
