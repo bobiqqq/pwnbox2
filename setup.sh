@@ -8,6 +8,7 @@ IMAGE="${PWNBOX_IMAGE:-pwnbox}"
 INSTALL_PATH="${PWNBOX_INSTALL_PATH:-/usr/local/bin/pwnbox}"
 DRY_RUN=false
 DISABLE_COLOR=false
+SKIP_BUILD=false
 
 if [ -n "${NO_COLOR:-}" ]; then
   DISABLE_COLOR=true
@@ -23,6 +24,7 @@ Options:
   --docker-host <uri>      docker host uri (default: unix://$HOME/.colima/<profile>/docker.sock)
   --image <name>           image name to build (default: pwnbox)
   --install-path <path>    path for launcher install (default: /usr/local/bin/pwnbox)
+  --skip-build             reuse an existing image instead of building it
   --dry-run                show steps without executing commands
   --no-color               disable colorized output
   -h, --help               show this help
@@ -67,6 +69,10 @@ while [ "$#" -gt 0 ]; do
       need_value "$@"
       INSTALL_PATH="$2"
       shift 2
+      ;;
+    --skip-build)
+      SKIP_BUILD=true
+      shift
       ;;
     --dry-run)
       DRY_RUN=true
@@ -379,11 +385,45 @@ check_docker_context() {
 }
 
 build_image() {
+  if $SKIP_BUILD; then
+    if docker --context "$DOCKER_CONTEXT" image inspect "$IMAGE" >/dev/null 2>&1; then
+      echo "skipping build: reusing existing image '$IMAGE'"
+      return 0
+    fi
+    echo "error: --skip-build requested but image '$IMAGE' not found in context '$DOCKER_CONTEXT'" >&2
+    echo "hint: rerun without --skip-build to build it" >&2
+    return 1
+  fi
+
   docker --context "$DOCKER_CONTEXT" buildx build \
     --progress=plain \
     --load \
     -t "$IMAGE" \
     "$REPO_DIR"
+}
+
+ensure_config() {
+  local cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/pwnbox"
+  local cfg="${cfg_dir}/config"
+
+  mkdir -p "$cfg_dir"
+
+  if [ -f "$cfg" ]; then
+    echo "config already exists (left untouched): $cfg"
+    return 0
+  fi
+
+  cat >"$cfg" <<'EOF'
+# pwnbox config: KEY=VALUE per line, '#' starts a comment.
+# Environment variables (PWNBOX_*) take precedence over this file.
+# Keys: PROFILE, DOCKER_CONTEXT, AUTO_CONTEXT, DOCKER_HOST, IMAGE,
+#       CONTAINER, DIR_FILE_LIMIT, PRIVILEGED, SECCOMP, STOP_COLIMA, NO_BANNER
+
+#NO_BANNER=1
+#STOP_COLIMA=ask
+#DIR_FILE_LIMIT=5
+EOF
+  echo "created default config: $cfg"
 }
 
 install_launcher() {
@@ -402,7 +442,7 @@ install_launcher() {
   return 1
 }
 
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 
 printf "%b" "$C_BOLD"
 print_logo
@@ -428,8 +468,13 @@ run_step 3 "$TOTAL_STEPS" "Ensure Docker buildx plugin" ensure_buildx_plugin
 run_step 4 "$TOTAL_STEPS" "Start Colima profile '$PROFILE'" start_colima
 run_step 5 "$TOTAL_STEPS" "Ensure Docker context '$DOCKER_CONTEXT'" ensure_docker_context
 run_step 6 "$TOTAL_STEPS" "Check Docker context '$DOCKER_CONTEXT'" check_docker_context
-run_step 7 "$TOTAL_STEPS" "Build Docker image '$IMAGE'" build_image
-run_step 8 "$TOTAL_STEPS" "Install launcher to '$INSTALL_PATH'" install_launcher
+BUILD_TITLE="Build Docker image '$IMAGE'"
+if $SKIP_BUILD; then
+  BUILD_TITLE="Reuse existing Docker image '$IMAGE'"
+fi
+run_step 7 "$TOTAL_STEPS" "$BUILD_TITLE" build_image
+run_step 8 "$TOTAL_STEPS" "Create default config" ensure_config
+run_step 9 "$TOTAL_STEPS" "Install launcher to '$INSTALL_PATH'" install_launcher
 
 printf "\n"
 ok "Setup completed successfully."

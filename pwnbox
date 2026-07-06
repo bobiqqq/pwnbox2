@@ -51,6 +51,14 @@ Environment variables (optional):
   PWNBOX_SECCOMP        (default|unconfined, default: default)
   PWNBOX_STOP_COLIMA    (ask|yes|no, default: ask)
   PWNBOX_NO_BANNER      (1 to disable banner)
+  PWNBOX_CONFIG         (config file path, default: ~/.config/pwnbox/config)
+
+Config file (~/.config/pwnbox/config):
+  KEY=VALUE per line, '#' starts a comment. Keys are the variables above
+  without the PWNBOX_ prefix (prefixed form also accepted), e.g.:
+    NO_BANNER=1
+    STOP_COLIMA=yes
+  Environment variables take precedence over the config file.
 EOF
 }
 
@@ -156,6 +164,45 @@ fi
 need_cmd colima
 need_cmd docker
 
+load_config() {
+  local cfg="${PWNBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/pwnbox/config}"
+  [ -f "$cfg" ] || return 0
+  local line key val envname lineno=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    key="${line%%=*}"
+    val="${line#*=}"
+    if [ "$key" = "$line" ]; then
+      echo "error: ${cfg}:${lineno}: expected KEY=VALUE, got: $line" >&2
+      exit 2
+    fi
+    key="${key%"${key##*[![:space:]]}"}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    key="${key#PWNBOX_}"
+    case "$key" in
+      PROFILE|DOCKER_CONTEXT|AUTO_CONTEXT|DOCKER_HOST|IMAGE|CONTAINER|DIR_FILE_LIMIT|PRIVILEGED|SECCOMP|STOP_COLIMA|NO_BANNER) ;;
+      *)
+        echo "error: ${cfg}:${lineno}: unknown key '$key' (see pwnbox --help)" >&2
+        exit 2
+        ;;
+    esac
+    case "$val" in
+      \"*\") val="${val#\"}"; val="${val%\"}" ;;
+      \'*\') val="${val#\'}"; val="${val%\'}" ;;
+    esac
+    envname="PWNBOX_${key}"
+    if [ -z "${!envname+x}" ]; then
+      printf -v "$envname" '%s' "$val"
+    fi
+  done <"$cfg"
+}
+load_config
+
 profile="${PWNBOX_PROFILE:-x64}"
 docker_ctx="${PWNBOX_DOCKER_CONTEXT:-colima-${profile}}"
 image="${PWNBOX_IMAGE:-pwnbox}"
@@ -210,7 +257,7 @@ on_exit() {
     if docker context inspect "$docker_ctx" >/dev/null 2>&1; then
       docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
     fi
-    colima stop -p "$profile" >/dev/null 2>&1 || true
+    stop_colima_vm force
   fi
 }
 trap on_exit EXIT
@@ -247,6 +294,89 @@ prompt_stop_colima() {
       *) ;;
     esac
   done
+}
+
+lima_instance() {
+  if [ "$profile" = "default" ]; then
+    echo "colima"
+  else
+    echo "colima-${profile}"
+  fi
+}
+
+qemu_pids() {
+  pgrep -f "qemu-system.*\.lima/$(lima_instance)/" 2>/dev/null | tr '\n' ' ' || true
+}
+
+# lima's shared user-v2 network daemons; colima stop leaks them, one per boot
+usernet_pids() {
+  pgrep -f "limactl usernet.*\.colima/_lima/_networks/" 2>/dev/null | tr '\n' ' ' || true
+}
+
+any_vm_running() {
+  pgrep -f "limactl hostagent" >/dev/null 2>&1 || pgrep -f "qemu-system" >/dev/null 2>&1
+}
+
+prompt_kill_leftover() {
+  local desc="$1" pids="$2"
+  if [ "$stop_mode" = "yes" ] || [ ! -r /dev/tty ]; then
+    return 0
+  fi
+  local ans
+  while true; do
+    printf "Leftover %s still running (pid: %s). Kill it? [Y/n] " "$desc" "$pids" >/dev/tty
+    IFS= read -r ans </dev/tty || ans=""
+    case "${ans:-Y}" in
+      y|Y|yes|YES) return 0 ;;
+      n|N|no|NO) return 1 ;;
+      *) ;;
+    esac
+  done
+}
+
+kill_leftover() {
+  local pid_fn="$1" pids="$2" i
+  kill $pids 2>/dev/null || true
+  for i in 1 2 3; do
+    pids="$("$pid_fn")"
+    if [ -z "${pids// /}" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  kill -9 $pids 2>/dev/null || true
+}
+
+# colima stop sometimes exits while qemu keeps running and holding memory,
+# and it leaks 'limactl usernet' daemons; wait a bit and offer to kill them.
+stop_colima_vm() {
+  local force="${1:-}" pids i
+  colima stop -p "$profile" >/dev/null 2>&1 || true
+
+  pids="$(qemu_pids)"
+  if [ -n "${pids// /}" ]; then
+    for i in 1 2 3 4 5; do
+      sleep 1
+      pids="$(qemu_pids)"
+      if [ -z "${pids// /}" ]; then
+        break
+      fi
+    done
+  fi
+  if [ -n "${pids// /}" ]; then
+    if [ "$force" = "force" ] || prompt_kill_leftover "qemu (profile '$profile')" "$pids"; then
+      kill_leftover qemu_pids "$pids"
+      echo "pwnbox: killed leftover qemu (pid: ${pids})"
+    fi
+  fi
+
+  pids="$(usernet_pids)"
+  if [ -n "${pids// /}" ] && ! any_vm_running; then
+    if [ "$force" = "force" ] || prompt_kill_leftover "colima network daemon(s)" "$pids"; then
+      kill_leftover usernet_pids "$pids"
+      echo "pwnbox: killed leftover limactl usernet (pid: ${pids})"
+    fi
+  fi
 }
 
 container_exists() {
@@ -314,7 +444,7 @@ if $do_rm; then
   fi
 
   if prompt_stop_colima; then
-    colima stop -p "$profile" >/dev/null 2>&1 || true
+    stop_colima_vm
   fi
   exit 0
 fi
@@ -347,7 +477,7 @@ if $do_size; then
     if container_exists; then
       docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
     fi
-    colima stop -p "$profile" >/dev/null 2>&1 || true
+    stop_colima_vm
   fi
   exit 0
 fi
@@ -395,7 +525,7 @@ if $do_clear; then
   echo "pwnbox: cleared container ${container} (/home/* except /home/ubuntu)"
   if prompt_stop_colima; then
     docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
-    colima stop -p "$profile" >/dev/null 2>&1 || true
+    stop_colima_vm
   fi
   exit 0
 fi
@@ -406,7 +536,7 @@ if $shell_only; then
   docker --context "$docker_ctx" exec -it -w /home "$container" /bin/zsh
   if prompt_stop_colima; then
     docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
-    colima stop -p "$profile" >/dev/null 2>&1 || true
+    stop_colima_vm
   fi
   exit 0
 fi
@@ -458,5 +588,5 @@ docker --context "$docker_ctx" exec -it -w "$workdir" "$container" /bin/zsh
 
 if prompt_stop_colima; then
   docker --context "$docker_ctx" stop "$container" >/dev/null 2>&1 || true
-  colima stop -p "$profile" >/dev/null 2>&1 || true
+  stop_colima_vm
 fi

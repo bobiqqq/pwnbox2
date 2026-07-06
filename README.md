@@ -93,6 +93,21 @@ Remove container:
 pwnbox --rm
 ```
 
+## Config file
+
+Persistent settings live in `~/.config/pwnbox/config` (override the path with
+`PWNBOX_CONFIG`). `setup.sh` creates this file with commented-out defaults —
+just edit it. One `KEY=VALUE` per line, `#` starts a comment; keys are the
+env vars below without the `PWNBOX_` prefix:
+
+```bash
+NO_BANNER=1
+STOP_COLIMA=ask
+DIR_FILE_LIMIT=5
+```
+
+Environment variables take precedence over the config file.
+
 ## Optional env vars
 ```bash
 export PWNBOX_PROFILE=x64
@@ -101,6 +116,8 @@ export PWNBOX_IMAGE=pwnbox
 export PWNBOX_CONTAINER=pwnbox-main
 export PWNBOX_DIR_FILE_LIMIT=5
 export PWNBOX_STOP_COLIMA=ask
+export PWNBOX_NO_BANNER=1
+export PWNBOX_CONFIG=~/.config/pwnbox/config
 
 # security/compatibility
 export PWNBOX_PRIVILEGED=no
